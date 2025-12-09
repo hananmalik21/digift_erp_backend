@@ -3,6 +3,8 @@ import cors from 'cors';
 import { createPool, closePool } from './config/db.js';
 import { FunctionController } from './features/functions/controller.js';
 import { ModuleController } from './features/modules/controller.js';
+import { OperationController } from './features/operations/controller.js';
+import { FunctionPrivilegeController } from './features/function-privileges/controller.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -46,6 +48,24 @@ app.put('/api/modules/:id', ModuleController.update);
 app.delete('/api/modules/:id', ModuleController.delete);
 
 // ==========================================
+// 📌 OPERATIONS ROUTES
+// ==========================================
+app.get('/api/operations', OperationController.getAll);
+app.get('/api/operations/:id', OperationController.getById);
+app.post('/api/operations', OperationController.create);
+app.put('/api/operations/:id', OperationController.update);
+app.delete('/api/operations/:id', OperationController.delete);
+
+// ==========================================
+// 📌 FUNCTION PRIVILEGES ROUTES
+// ==========================================
+app.get('/api/function-privileges', FunctionPrivilegeController.getAll);
+app.get('/api/function-privileges/:id', FunctionPrivilegeController.getById);
+app.post('/api/function-privileges', FunctionPrivilegeController.create);
+app.put('/api/function-privileges/:id', FunctionPrivilegeController.update);
+app.delete('/api/function-privileges/:id', FunctionPrivilegeController.delete);
+
+// ==========================================
 // 📌 404 HANDLER
 // ==========================================
 app.use((req, res) => {
@@ -65,7 +85,17 @@ app.use((req, res) => {
       'GET    /api/modules/:id',
       'POST   /api/modules',
       'PUT    /api/modules/:id',
-      'DELETE /api/modules/:id'
+      'DELETE /api/modules/:id',
+      'GET    /api/operations?page=1&limit=10',
+      'GET    /api/operations/:id',
+      'POST   /api/operations',
+      'PUT    /api/operations/:id',
+      'DELETE /api/operations/:id',
+      'GET    /api/function-privileges?page=1&limit=10',
+      'GET    /api/function-privileges/:id',
+      'POST   /api/function-privileges',
+      'PUT    /api/function-privileges/:id',
+      'DELETE /api/function-privileges/:id'
     ]
   });
 });
@@ -89,6 +119,16 @@ const server = app.listen(PORT, () => {
   console.log(`   POST   http://localhost:${PORT}/api/modules`);
   console.log(`   PUT    http://localhost:${PORT}/api/modules/:id`);
   console.log(`   DELETE http://localhost:${PORT}/api/modules/:id`);
+  console.log(`   GET    http://localhost:${PORT}/api/operations?page=1&limit=10`);
+  console.log(`   GET    http://localhost:${PORT}/api/operations/:id`);
+  console.log(`   POST   http://localhost:${PORT}/api/operations`);
+  console.log(`   PUT    http://localhost:${PORT}/api/operations/:id`);
+  console.log(`   DELETE http://localhost:${PORT}/api/operations/:id`);
+  console.log(`   GET    http://localhost:${PORT}/api/function-privileges?page=1&limit=10`);
+  console.log(`   GET    http://localhost:${PORT}/api/function-privileges/:id`);
+  console.log(`   POST   http://localhost:${PORT}/api/function-privileges`);
+  console.log(`   PUT    http://localhost:${PORT}/api/function-privileges/:id`);
+  console.log(`   DELETE http://localhost:${PORT}/api/function-privileges/:id`);
   console.log('\n✨ Ready to accept requests!\n');
 });
 
