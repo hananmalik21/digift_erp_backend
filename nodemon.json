@@ -1,0 +1,10 @@
+{
+  "watch": ["api-server.js", "config", "feature", "utils", "*.js"],
+  "ext": "js,json",
+  "ignore": ["node_modules", "TESTDB", "*.zip"],
+  "exec": "node api-server.js",
+  "env": {
+    "NODE_ENV": "development"
+  }
+}
+
