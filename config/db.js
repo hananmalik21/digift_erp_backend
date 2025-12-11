@@ -269,220 +269,156 @@
 
 
 // config/db.js
-import oracledb from 'oracledb';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import dotenv from 'dotenv';
-import fs from 'fs';
+import oracledb from "oracledb";
+import path from "path";
+import { fileURLToPath } from "url";
+import fs from "fs";
+import dotenv from "dotenv";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = path.dirname(__filename);
 
-// --------------------------------------------------
-// 🔐 Wallet path resolution (local + Render friendly)
-// --------------------------------------------------
-const localWalletPath = process.env.ORACLE_WALLET_PATH || 'C:\\oracle\\wallet';
-const projectWalletPath = path.resolve(__dirname, '../TESTDB');
+// ------------------------------------------------------
+// 🔐 Wallet Path Resolution
+// ------------------------------------------------------
+const localWalletPath = process.env.ORACLE_WALLET_PATH || "/Users/mac/oracle/wallet";
+const projectWalletPath = path.resolve(__dirname, "../TESTDB");
 
-// Use local wallet if it exists (for your Windows/mac dev), otherwise project wallet
 let walletPath;
-if (
-  fs.existsSync(localWalletPath) &&
-  fs.existsSync(path.join(localWalletPath, 'cwallet.sso'))
-) {
+
+// Prefer local wallet on Mac/Windows
+if (fs.existsSync(localWalletPath) && fs.existsSync(path.join(localWalletPath, "cwallet.sso"))) {
   walletPath = localWalletPath;
-  console.log('Using local wallet (non-OneDrive location)');
+  console.log("📌 Using local wallet:", walletPath);
 } else {
   walletPath = projectWalletPath;
-  console.log('Using project wallet (TESTDB folder)');
-  if (process.platform === 'win32') {
-    console.log('⚠️  Warning: Wallet in OneDrive may cause ORA-28759 errors');
-    console.log('   Consider copying TESTDB to C:\\oracle\\wallet for better compatibility');
-  }
+  console.log("📌 Using project wallet:", walletPath);
 }
 
-const absoluteWalletPath = path.resolve(walletPath);
+process.env.TNS_ADMIN = walletPath;
 
-// Set TNS_ADMIN BEFORE any DB usage (THIN mode will still use it for wallet/sqlnet)
-process.env.TNS_ADMIN = absoluteWalletPath;
-process.env.ORA_SDTZ = 'UTC';
+// ------------------------------------------------------
+// 🌐 Auto-Detect Thick vs Thin Mode
+// ------------------------------------------------------
+let runningInRender = process.env.RENDER === "true" || process.env.DYNO !== undefined;
+let useThickMode = false;
 
-console.log(`Wallet path: ${absoluteWalletPath}`);
-console.log(`TNS_ADMIN: ${process.env.TNS_ADMIN}`);
+if (process.platform === "darwin" && !runningInRender) {
+  // Running on macOS local machine → THICK MODE
+  useThickMode = true;
+}
 
-// --------------------------------------------------
-// 🚫 IMPORTANT: NO initOracleClient => THIN MODE
-// --------------------------------------------------
-// We REMOVE all calls to oracledb.initOracleClient()
-// That means node-oracledb stays in THIN mode.
-// THIN mode:
-//   - Does NOT require Oracle Instant Client
-//   - Works on Render / serverless / Docker without native libs
-//   - Fully supports Autonomous DB + wallet + TCPS
-//
-// So: DO NOT call oracledb.initOracleClient() anywhere.
-oracledb.outFormat = oracledb.OUT_FORMAT_OBJECT;
+// ------------------------------------------------------
+// 🟦 Initialize Thick Mode (ONLY on macOS dev)
+// ------------------------------------------------------
+if (useThickMode) {
+  try {
+    const libDir = process.env.ORACLE_CLIENT_LIB_DIR;
 
-// --------------------------------------------------
-// 🔗 Connection String Mapping (ADB services)
-// --------------------------------------------------
-const envTnsName = process.env.DB_CONNECT_STRING || 'testdb_high';
+    if (!libDir || !fs.existsSync(libDir)) {
+      console.log("⚠️ Thick mode requires Oracle Instant Client");
+      console.log("Set ORACLE_CLIENT_LIB_DIR in .env");
+    } else {
+      oracledb.initOracleClient({ libDir });
+      console.log("🔵 Thick Mode enabled (Oracle Instant Client loaded)");
+    }
+  } catch (err) {
+    console.error("❌ Failed to init Thick Mode:", err.message);
+    console.log("➡️ Falling back to THIN mode");
+    useThickMode = false;
+  }
+} else {
+  console.log("🟢 Using THIN Mode (Render-safe)");
+}
 
-// Normalise key (so TESTDB_HIGH, TestDb_High etc all map)
-const tnsKey = envTnsName.toLowerCase();
+// ------------------------------------------------------
+// 🟩 Connect String Mapping
+// ------------------------------------------------------
+const tns = (process.env.DB_CONNECT_STRING || "testdb_high").toLowerCase();
 
-const connectionStrings = {
-  'testdb_high':
-    '(description=(retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=g3ef73baddaf774_testdb_high.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))',
-  'testdb_low':
-    '(description=(retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=g3ef73baddaf774_testdb_low.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))',
-  'testdb_medium':
-    '(description=(retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=g3ef73baddaf774_testdb_medium.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))',
-  'testdb_tp':
-    '(description=(retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=g3ef73baddaf774_testdb_tp.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))',
-  'testdb_tpurgent':
-    '(description=(retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=g3ef73baddaf774_testdb_tpurgent.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))'
+const mapping = {
+  testdb_high:
+    "(description=(retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)" +
+    "(host=adb.eu-frankfurt-1.oraclecloud.com))(connect_data=(service_name=g3ef73baddaf774_testdb_high.adb.oraclecloud.com))" +
+    "(security=(ssl_server_dn_match=yes)))",
 };
 
-const connectString = connectionStrings[tnsKey] || envTnsName;
+const connectString = mapping[tns] || tns;
 
-// --------------------------------------------------
-// ⚙️ DB Pool Configuration
-// --------------------------------------------------
-const dbConfig = {
-  connectString,
+// ------------------------------------------------------
+// 🟪 Pool Config
+// ------------------------------------------------------
+const poolConfig = {
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  poolMin: parseInt(process.env.DB_POOL_MIN || '2', 10),
-  poolMax: parseInt(process.env.DB_POOL_MAX || '10', 10),
-  poolIncrement: parseInt(process.env.DB_POOL_INCREMENT || '1', 10),
-  poolTimeout: parseInt(process.env.DB_POOL_TIMEOUT || '60', 10),
-  externalAuth: false,
-  stmtCacheSize: 30
+  connectString,
+  poolMin: 1,
+  poolMax: 5,
+  poolIncrement: 1,
 };
 
-let pool = null;
+let pool;
 
-// --------------------------------------------------
-// 🌊 Create a connection pool (THIN MODE)
-// --------------------------------------------------
+// ------------------------------------------------------
+// 🌊 Create Pool
+// ------------------------------------------------------
 export async function createPool() {
   try {
-    if (!dbConfig.user || dbConfig.user === 'your_username') {
-      throw new Error('DB_USER is not set in .env file. Please provide your database username.');
-    }
-    if (!dbConfig.password || dbConfig.password === 'your_password') {
-      throw new Error('DB_PASSWORD is not set in .env file. Please provide your database password.');
-    }
-
-    // Verify wallet path exists (needed for ADB TCPS)
-    if (!fs.existsSync(absoluteWalletPath)) {
-      throw new Error(`Wallet path not found: ${absoluteWalletPath}`);
-    }
-    if (!fs.existsSync(path.join(absoluteWalletPath, 'cwallet.sso'))) {
-      throw new Error(`Wallet file not found in: ${absoluteWalletPath}`);
+    if (!fs.existsSync(walletPath)) {
+      throw new Error("Wallet not found at " + walletPath);
     }
 
     if (!pool) {
-      console.log('Creating Oracle connection pool in THIN mode...');
-      pool = await oracledb.createPool(dbConfig);
-      console.log('Connection pool created successfully (THIN mode)');
-    } else {
-      console.log('Oracle connection pool already exists, reusing.');
+      console.log(`🔌 Creating DB pool (${useThickMode ? "THICK" : "THIN"} mode)...`);
+      pool = await oracledb.createPool(poolConfig);
+      console.log("✅ DB Pool created.");
     }
-
     return pool;
-  } catch (error) {
-    if (error.message.includes('DB_USER') || error.message.includes('DB_PASSWORD')) {
-      console.error('\n❌ Configuration Error:', error.message);
-      console.error('\nPlease update your .env file with valid database credentials.');
-    } else if (error.errorNum === 28759) {
-      console.error('\n❌ Wallet Error (ORA-28759):');
-      console.error('Unable to open wallet file. Possible causes:');
-      console.error('1. Wallet files are corrupted or inaccessible');
-      console.error('2. Wallet files in OneDrive may not be fully synced locally');
-      console.error('3. File permissions issue');
-      console.error('4. Invalid database credentials');
-      console.error(`\nWallet path: ${absoluteWalletPath}`);
-      console.error(`TNS_ADMIN: ${process.env.TNS_ADMIN}`);
-    } else if (error.errorNum === 28001) {
-      console.error('\n❌ Account Expired (ORA-28001):');
-      console.error('Your database account password has expired and must be changed.');
-      console.error('\nReset password for user:', dbConfig.user);
-    } else {
-      console.error('Error creating connection pool:', error);
-    }
-    throw error;
+  } catch (err) {
+    console.error("❌ createPool error:", err);
+    throw err;
   }
 }
 
-// --------------------------------------------------
-// 🔌 Get a connection from the pool
-// --------------------------------------------------
+// ------------------------------------------------------
+// 🔌 Get Connection
+// ------------------------------------------------------
 export async function getConnection() {
-  try {
-    if (!pool) {
-      await createPool();
-    }
-    return await pool.getConnection();
-  } catch (error) {
-    console.error('Error getting connection:', error);
-    throw error;
-  }
+  if (!pool) await createPool();
+  return pool.getConnection();
 }
 
-// --------------------------------------------------
-// 🧾 Execute a query
-// --------------------------------------------------
+// ------------------------------------------------------
+// 📄 Execute Query
+// ------------------------------------------------------
 export async function executeQuery(sql, binds = [], options = {}) {
-  let connection;
+  let conn;
   try {
-    connection = await getConnection();
-    const result = await connection.execute(sql, binds, {
+    conn = await getConnection();
+    const result = await conn.execute(sql, binds, {
       outFormat: oracledb.OUT_FORMAT_OBJECT,
-      ...options
+      ...options,
     });
     return result;
-  } catch (error) {
-    console.error('Error executing query:', error);
-    throw error;
+  } catch (err) {
+    console.error("❌ Query error:", err);
+    throw err;
   } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (error) {
-        console.error('Error closing connection:', error);
-      }
-    }
+    if (conn) await conn.close();
   }
 }
 
-// --------------------------------------------------
-// 📴 Close the connection pool
-// --------------------------------------------------
+// ------------------------------------------------------
+// 🔻 Close Pool
+// ------------------------------------------------------
 export async function closePool() {
-  try {
-    if (pool) {
-      console.log('Closing Oracle connection pool...');
-      await pool.close();
-      pool = null;
-      console.log('Connection pool closed');
-    }
-  } catch (error) {
-    console.error('Error closing pool:', error);
-    throw error;
+  if (pool) {
+    await pool.close();
+    pool = null;
+    console.log("🔻 DB Pool closed");
   }
 }
 
-export default {
-  createPool,
-  getConnection,
-  executeQuery,
-  closePool,
-  dbConfig
-};
-
-
+export default { createPool, getConnection, executeQuery, closePool };
