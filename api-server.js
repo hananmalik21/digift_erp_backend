@@ -1,10 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import { createPool, closePool } from './config/db.js';
-import { FunctionController } from './features/functions/controller.js';
-import { ModuleController } from './features/modules/controller.js';
-import { OperationController } from './features/operations/controller.js';
-import { FunctionPrivilegeController } from './features/function-privileges/controller.js';
+import moduleRoutes from './features/modules/routes.js';
+import functionRoutes from './features/functions/routes.js';
+import operationRoutes from './features/operations/routes.js';
+import functionPrivilegeRoutes from './features/function-privileges/routes.js';
+import dutyRoleRoutes from './features/duty-roles/routes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,41 +30,13 @@ app.get('/health', (req, res) => {
 });
 
 // ==========================================
-// 📌 FUNCTIONS ROUTES
+// 📌 API ROUTES
 // ==========================================
-app.get('/api/functions', FunctionController.getAll);
-app.get('/api/functions/:id', FunctionController.getById);
-app.get('/api/functions/module/:moduleId', FunctionController.getByModuleId);
-app.post('/api/functions', FunctionController.create);
-app.put('/api/functions/:id', FunctionController.update);
-app.delete('/api/functions/:id', FunctionController.delete);
-
-// ==========================================
-// 📌 MODULES ROUTES
-// ==========================================
-app.get('/api/modules', ModuleController.getAll);
-app.get('/api/modules/:id', ModuleController.getById);
-app.post('/api/modules', ModuleController.create);
-app.put('/api/modules/:id', ModuleController.update);
-app.delete('/api/modules/:id', ModuleController.delete);
-
-// ==========================================
-// 📌 OPERATIONS ROUTES
-// ==========================================
-app.get('/api/operations', OperationController.getAll);
-app.get('/api/operations/:id', OperationController.getById);
-app.post('/api/operations', OperationController.create);
-app.put('/api/operations/:id', OperationController.update);
-app.delete('/api/operations/:id', OperationController.delete);
-
-// ==========================================
-// 📌 FUNCTION PRIVILEGES ROUTES
-// ==========================================
-app.get('/api/function-privileges', FunctionPrivilegeController.getAll);
-app.get('/api/function-privileges/:id', FunctionPrivilegeController.getById);
-app.post('/api/function-privileges', FunctionPrivilegeController.create);
-app.put('/api/function-privileges/:id', FunctionPrivilegeController.update);
-app.delete('/api/function-privileges/:id', FunctionPrivilegeController.delete);
+app.use('/api/modules', moduleRoutes);
+app.use('/api/functions', functionRoutes);
+app.use('/api/operations', operationRoutes);
+app.use('/api/function-privileges', functionPrivilegeRoutes);
+app.use('/api/duty-roles', dutyRoleRoutes);
 
 // ==========================================
 // 📌 404 HANDLER
@@ -95,7 +68,12 @@ app.use((req, res) => {
       'GET    /api/function-privileges/:id',
       'POST   /api/function-privileges',
       'PUT    /api/function-privileges/:id',
-      'DELETE /api/function-privileges/:id'
+      'DELETE /api/function-privileges/:id',
+      'GET    /api/duty-roles?page=1&limit=10',
+      'GET    /api/duty-roles/:id',
+      'POST   /api/duty-roles',
+      'PUT    /api/duty-roles/:id',
+      'DELETE /api/duty-roles/:id'
     ]
   });
 });
@@ -129,6 +107,11 @@ const server = app.listen(PORT, () => {
   console.log(`   POST   http://localhost:${PORT}/api/function-privileges`);
   console.log(`   PUT    http://localhost:${PORT}/api/function-privileges/:id`);
   console.log(`   DELETE http://localhost:${PORT}/api/function-privileges/:id`);
+  console.log(`   GET    http://localhost:${PORT}/api/duty-roles?page=1&limit=10`);
+  console.log(`   GET    http://localhost:${PORT}/api/duty-roles/:id`);
+  console.log(`   POST   http://localhost:${PORT}/api/duty-roles`);
+  console.log(`   PUT    http://localhost:${PORT}/api/duty-roles/:id`);
+  console.log(`   DELETE http://localhost:${PORT}/api/duty-roles/:id`);
   console.log('\n✨ Ready to accept requests!\n');
 });
 
