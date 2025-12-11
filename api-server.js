@@ -6,6 +6,7 @@ import functionRoutes from './features/functions/routes.js';
 import operationRoutes from './features/operations/routes.js';
 import functionPrivilegeRoutes from './features/function-privileges/routes.js';
 import dutyRoleRoutes from './features/duty-roles/routes.js';
+import jobRoleRoutes from './features/job-roles/routes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -37,6 +38,7 @@ app.use('/api/functions', functionRoutes);
 app.use('/api/operations', operationRoutes);
 app.use('/api/function-privileges', functionPrivilegeRoutes);
 app.use('/api/duty-roles', dutyRoleRoutes);
+app.use('/api/job-roles', jobRoleRoutes);
 
 // ==========================================
 // 📌 404 HANDLER
@@ -73,7 +75,12 @@ app.use((req, res) => {
       'GET    /api/duty-roles/:id',
       'POST   /api/duty-roles',
       'PUT    /api/duty-roles/:id',
-      'DELETE /api/duty-roles/:id'
+      'DELETE /api/duty-roles/:id',
+      'GET    /api/job-roles?page=1&limit=10',
+      'GET    /api/job-roles/:id',
+      'POST   /api/job-roles',
+      'PUT    /api/job-roles/:id',
+      'DELETE /api/job-roles/:id'
     ]
   });
 });
@@ -107,11 +114,16 @@ const server = app.listen(PORT, () => {
   console.log(`   POST   http://localhost:${PORT}/api/function-privileges`);
   console.log(`   PUT    http://localhost:${PORT}/api/function-privileges/:id`);
   console.log(`   DELETE http://localhost:${PORT}/api/function-privileges/:id`);
-  console.log(`   GET    http://localhost:${PORT}/api/duty-roles?page=1&limit=10`);
-  console.log(`   GET    http://localhost:${PORT}/api/duty-roles/:id`);
-  console.log(`   POST   http://localhost:${PORT}/api/duty-roles`);
-  console.log(`   PUT    http://localhost:${PORT}/api/duty-roles/:id`);
-  console.log(`   DELETE http://localhost:${PORT}/api/duty-roles/:id`);
+    console.log(`   GET    http://localhost:${PORT}/api/duty-roles?page=1&limit=10`);
+    console.log(`   GET    http://localhost:${PORT}/api/duty-roles/:id`);
+    console.log(`   POST   http://localhost:${PORT}/api/duty-roles`);
+    console.log(`   PUT    http://localhost:${PORT}/api/duty-roles/:id`);
+    console.log(`   DELETE http://localhost:${PORT}/api/duty-roles/:id`);
+    console.log(`   GET    http://localhost:${PORT}/api/job-roles?page=1&limit=10`);
+    console.log(`   GET    http://localhost:${PORT}/api/job-roles/:id`);
+    console.log(`   POST   http://localhost:${PORT}/api/job-roles`);
+    console.log(`   PUT    http://localhost:${PORT}/api/job-roles/:id`);
+    console.log(`   DELETE http://localhost:${PORT}/api/job-roles/:id`);
   console.log('\n✨ Ready to accept requests!\n');
 });
 

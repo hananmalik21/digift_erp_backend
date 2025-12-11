@@ -141,111 +141,189 @@ export class DutyRoleController {
    * @param {Object} req - Express request object
    * @param {Object} res - Express response object
    */
-  static async create(req, res) {
-    try {
-      const { dutyRoleName, roleCode, description, moduleId, functionPrivileges, status, createdBy } = req.body;
+static async create(jobRoleData) {
+  const connection = await getConnection();
+  try {
+    const {
+      jobRoleCode,
+      jobRoleName,
+      description,
+      dutyRolesArray,
+      status,              // ❗ no default here
+      createdBy = 'SYSTEM',
+      isSystemRole = 'N',  // if you're using this, else you can omit
+    } = jobRoleData;
 
-      // Validate required fields
-      if (!dutyRoleName) {
-        return res.status(400).json(
-          DutyRoleView.formatErrorResponse('dutyRoleName is required', 400)
-        );
-      }
-
-      if (!roleCode) {
-        return res.status(400).json(
-          DutyRoleView.formatErrorResponse('roleCode is required', 400)
-        );
-      }
-
-      // Validate status if provided
-      if (status && !['ACTIVE', 'INACTIVE'].includes(status.toUpperCase())) {
-        return res.status(400).json(
-          DutyRoleView.formatErrorResponse('status must be ACTIVE or INACTIVE', 400)
-        );
-      }
-
-      // Create duty role
-      const dutyRoleData = await DutyRoleModel.create({
-        dutyRoleName,
-        roleCode,
-        description,
-        moduleId,
-        functionPrivileges,
-        status: status || 'ACTIVE',
-        createdBy: createdBy || 'SYSTEM'
-      });
-
-      res.status(201).json(DutyRoleView.formatSingleResponse(dutyRoleData));
-    } catch (error) {
-      // Handle unique constraint violations
-      if (error.message.includes('unique constraint') || error.errorNum === 1) {
-        return res.status(409).json(
-          DutyRoleView.formatErrorResponse('Role code already exists', 409)
-        );
-      }
-
-      res.status(500).json(
-        DutyRoleView.formatErrorResponse(error.message, 500)
-      );
+    if (!jobRoleCode || !jobRoleName) {
+      throw new Error('jobRoleCode and jobRoleName are required');
     }
+
+    // 🔵 Normalize STATUS to exactly 'Active' / 'Inactive'
+    let normalizedStatus;
+    if (!status) {
+      // use DB default behaviour: 'Active'
+      normalizedStatus = 'Active';
+    } else {
+      const upper = status.toUpperCase();
+      if (upper === 'ACTIVE') normalizedStatus = 'Active';
+      else if (upper === 'INACTIVE') normalizedStatus = 'Inactive';
+      else throw new Error('Invalid status value'); // should never happen due to controller validation
+    }
+
+    // 🔵 Normalize IS_SYSTEM_ROLE to 'N' / 'Y'
+    const normalizedIsSystemRole = (isSystemRole || 'N').toUpperCase() === 'Y' ? 'Y' : 'N';
+
+    const encodedDutyRoles = dutyRolesArray ? this.encodeDutyRoles(dutyRolesArray) : null;
+
+    const columns = [
+      'JOB_ROLE_CODE',
+      'JOB_ROLE_NAME',
+      'DESCRIPTION',
+      'DEPARTMENT',
+      'STATUS',
+      'IS_SYSTEM_ROLE',
+      'CREATED_BY',
+      'CREATED_AT'
+    ];
+    const values = [
+      ':jobRoleCode',
+      ':jobRoleName',
+      ':description',
+      ':department',
+      ':status',
+      ':isSystemRole',
+      ':createdBy',
+      'SYSDATE'
+    ];
+    const binds = {
+      jobRoleCode,
+      jobRoleName,
+      description: description || null,
+      department: null,            // or from jobRoleData if you use it
+      status: normalizedStatus,    // ✅ matches constraint
+      isSystemRole: normalizedIsSystemRole,
+      createdBy,
+      jobRoleId: { type: oracledb.NUMBER, dir: oracledb.BIND_OUT }
+    };
+
+    if (encodedDutyRoles !== null) {
+      columns.push('DUTY_ROLES');
+      values.push(':dutyRoles');
+      binds.dutyRoles = encodedDutyRoles;
+    }
+
+    const result = await connection.execute(
+      `INSERT INTO SEC.JOB_ROLES (
+        ${columns.join(', ')}
+      ) VALUES (
+        ${values.join(', ')}
+      )
+      RETURNING JOB_ROLE_ID INTO :jobRoleId`,
+      binds,
+      { autoCommit: true }
+    );
+
+    const jobRoleId = result.outBinds.jobRoleId[0];
+    await connection.close();
+
+    return await this.getById(jobRoleId);
+  } catch (error) {
+    await connection.close();
+    throw error;
   }
+}
+
+
+
 
   /**
    * Update a duty role
    * @param {Object} req - Express request object
    * @param {Object} res - Express response object
    */
-  static async update(req, res) {
-    try {
-      const dutyRoleId = parseInt(req.params.id);
-      
-      if (isNaN(dutyRoleId)) {
-        return res.status(400).json(
-          DutyRoleView.formatErrorResponse('Invalid duty role ID', 400)
-        );
-      }
+static async update(jobRoleId, jobRoleData) {
+  const connection = await getConnection();
+  try {
+    const {
+      jobRoleCode,
+      jobRoleName,
+      description,
+      dutyRolesArray,
+      status,
+      updatedBy = 'SYSTEM',
+      isSystemRole,
+    } = jobRoleData;
 
-      const { dutyRoleName, roleCode, description, moduleId, functionPrivileges, status, updatedBy } = req.body;
+    const updates = [];
+    const binds = { jobRoleId };
 
-      // Validate status if provided
-      if (status && !['ACTIVE', 'INACTIVE'].includes(status.toUpperCase())) {
-        return res.status(400).json(
-          DutyRoleView.formatErrorResponse('status must be ACTIVE or INACTIVE', 400)
-        );
-      }
-
-      // Update duty role
-      const dutyRoleData = await DutyRoleModel.update(dutyRoleId, {
-        dutyRoleName,
-        roleCode,
-        description,
-        moduleId,
-        functionPrivileges,
-        status,
-        updatedBy: updatedBy || 'SYSTEM'
-      });
-
-      if (!dutyRoleData) {
-        return res.status(404).json(
-          DutyRoleView.formatErrorResponse('Duty role not found', 404)
-        );
-      }
-
-      res.json(DutyRoleView.formatSingleResponse(dutyRoleData));
-    } catch (error) {
-      // Handle unique constraint violations
-      if (error.message.includes('unique constraint') || error.errorNum === 1) {
-        return res.status(409).json(
-          DutyRoleView.formatErrorResponse('Role code already exists', 409)
-        );
-      }
-
-      res.status(500).json(
-        DutyRoleView.formatErrorResponse(error.message, 500)
-      );
+    if (jobRoleCode !== undefined) {
+      updates.push('JOB_ROLE_CODE = :jobRoleCode');
+      binds.jobRoleCode = jobRoleCode;
     }
+
+    if (jobRoleName !== undefined) {
+      updates.push('JOB_ROLE_NAME = :jobRoleName');
+      binds.jobRoleName = jobRoleName;
+    }
+
+    if (description !== undefined) {
+      updates.push('DESCRIPTION = :description');
+      binds.description = description;
+    }
+
+    if (dutyRolesArray !== undefined) {
+      const encodedDutyRoles = this.encodeDutyRoles(dutyRolesArray);
+      updates.push('DUTY_ROLES = :dutyRoles');
+      binds.dutyRoles = encodedDutyRoles;
+    }
+
+    if (status !== undefined) {
+      const upper = status.toUpperCase();
+      let normalizedStatus = null;
+      if (upper === 'ACTIVE') normalizedStatus = 'Active';
+      else if (upper === 'INACTIVE') normalizedStatus = 'Inactive';
+      else throw new Error('Invalid status value');
+
+      updates.push('STATUS = :status');
+      binds.status = normalizedStatus;
+    }
+
+    if (isSystemRole !== undefined) {
+      const normalizedIsSystemRole = isSystemRole.toUpperCase() === 'Y' ? 'Y' : 'N';
+      updates.push('IS_SYSTEM_ROLE = :isSystemRole');
+      binds.isSystemRole = normalizedIsSystemRole;
+    }
+
+    if (updates.length === 0) {
+      throw new Error('No fields to update');
+    }
+
+    updates.push('UPDATED_AT = SYSDATE');
+    updates.push('UPDATED_BY = :updatedBy');
+    binds.updatedBy = updatedBy;
+
+    const updateQuery = `
+      UPDATE SEC.JOB_ROLES 
+      SET ${updates.join(', ')}
+      WHERE JOB_ROLE_ID = :jobRoleId
+    `;
+
+    const result = await connection.execute(updateQuery, binds, { autoCommit: true });
+
+    await connection.close();
+
+    if (result.rowsAffected === 0) {
+      return null;
+    }
+
+    return await this.getById(jobRoleId);
+  } catch (error) {
+    await connection.close();
+    throw error;
   }
+}
+
 
   /**
    * Delete a duty role
