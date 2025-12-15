@@ -23,9 +23,30 @@ export class DutyRoleView {
       if (lowerCaseItem.function_privileges_decoded) {
         lowerCaseItem.function_privileges = lowerCaseItem.function_privileges_decoded;
       }
-
-      // Remove the helper property only
       delete lowerCaseItem.function_privileges_decoded;
+
+      // Expose inherited_from_roles
+      if (lowerCaseItem.inherited_from_roles_decoded) {
+        lowerCaseItem.inherited_from_roles = lowerCaseItem.inherited_from_roles_decoded;
+      }
+      delete lowerCaseItem.inherited_from_roles_decoded;
+
+      // Expose inherited_child_roles
+      if (lowerCaseItem.inherited_child_roles_decoded) {
+        lowerCaseItem.inherited_child_roles = lowerCaseItem.inherited_child_roles_decoded;
+      }
+      delete lowerCaseItem.inherited_child_roles_decoded;
+
+      // Ensure arrays exist
+      if (!Array.isArray(lowerCaseItem.function_privileges)) {
+        lowerCaseItem.function_privileges = [];
+      }
+      if (!Array.isArray(lowerCaseItem.inherited_from_roles)) {
+        lowerCaseItem.inherited_from_roles = [];
+      }
+      if (!Array.isArray(lowerCaseItem.inherited_child_roles)) {
+        lowerCaseItem.inherited_child_roles = [];
+      }
 
       return lowerCaseItem;
     });
@@ -69,9 +90,30 @@ export class DutyRoleView {
     if (lowerCaseItem.function_privileges_decoded) {
       lowerCaseItem.function_privileges = lowerCaseItem.function_privileges_decoded;
     }
-
-    // Remove the helper property only
     delete lowerCaseItem.function_privileges_decoded;
+
+    // Expose inherited_from_roles
+    if (lowerCaseItem.inherited_from_roles_decoded) {
+      lowerCaseItem.inherited_from_roles = lowerCaseItem.inherited_from_roles_decoded;
+    }
+    delete lowerCaseItem.inherited_from_roles_decoded;
+
+    // Expose inherited_child_roles
+    if (lowerCaseItem.inherited_child_roles_decoded) {
+      lowerCaseItem.inherited_child_roles = lowerCaseItem.inherited_child_roles_decoded;
+    }
+    delete lowerCaseItem.inherited_child_roles_decoded;
+
+    // Ensure arrays exist
+    if (!Array.isArray(lowerCaseItem.function_privileges)) {
+      lowerCaseItem.function_privileges = [];
+    }
+    if (!Array.isArray(lowerCaseItem.inherited_from_roles)) {
+      lowerCaseItem.inherited_from_roles = [];
+    }
+    if (!Array.isArray(lowerCaseItem.inherited_child_roles)) {
+      lowerCaseItem.inherited_child_roles = [];
+    }
     
     return {
       success: true,
