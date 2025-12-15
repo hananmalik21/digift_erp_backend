@@ -108,6 +108,294 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
   }
 
   /**
+   * Helper: decode various stored formats into clean array of numeric IDs
+   * Works for INHERITED_FROM_ROLES / INHERITED_CHILD_ROLES and generic ID lists.
+   *
+   * Supported formats:
+   *  - JSON string "[1,2,3]"
+   *  - comma string "1,2,3"
+   *  - array [1, "2", 3]
+   */
+  static decodeIdArray(encoded) {
+    if (!encoded) return [];
+
+    try {
+      let value = encoded;
+
+      if (typeof value === 'string') {
+        try {
+          value = JSON.parse(value);
+        } catch (e) {
+          return value
+            .split(',')
+            .map(v => parseInt(v.trim(), 10))
+            .filter(v => !isNaN(v));
+        }
+      }
+
+      if (Array.isArray(value)) {
+        return value
+          .map(v =>
+            typeof v === 'number'
+              ? v
+              : parseInt(v, 10)
+          )
+          .filter(v => !isNaN(v));
+      }
+
+      return [];
+    } catch (err) {
+      console.error('decodeIdArray error:', err, 'value=', encoded);
+      return [];
+    }
+  }
+
+  /**
+   * Helper: encode array of IDs into JSON string, or null
+   */
+  static encodeIdArray(ids) {
+    if (!ids || !Array.isArray(ids) || ids.length === 0) return null;
+
+    const clean = [...new Set(
+      ids
+        .map(v =>
+          typeof v === 'number'
+            ? v
+            : parseInt(v, 10)
+        )
+        .filter(v => !isNaN(v))
+    )];
+
+    return clean.length ? JSON.stringify(clean) : null;
+  }
+
+  /**
+   * Helper: fetch duty roles by IDs (for inherited_from_roles / inherited_child_roles display)
+   */
+  static async fetchDutyRolesByIds(idList) {
+    if (!idList || idList.length === 0) return [];
+
+    const uniqueIds = [...new Set(idList)].filter(id => !isNaN(id));
+    if (uniqueIds.length === 0) return [];
+
+    const binds = {};
+    const placeholders = uniqueIds
+      .map((id, idx) => {
+        const key = `id${idx}`;
+        binds[key] = id;
+        return `:${key}`;
+      })
+      .join(',');
+
+    const sql = `
+      SELECT DUTY_ROLE_ID, DUTY_ROLE_NAME, ROLE_CODE, STATUS
+        FROM SEC.DUTY_ROLES
+       WHERE DUTY_ROLE_ID IN (${placeholders})
+       ORDER BY DUTY_ROLE_ID
+    `;
+
+    const result = await executeQuery(sql, binds);
+
+    return result.rows.map(row => ({
+      duty_role_id: row.DUTY_ROLE_ID,
+      duty_role_name: row.DUTY_ROLE_NAME,
+      role_code: row.ROLE_CODE,
+      status: row.STATUS
+    }));
+  }
+
+  /**
+   * Helper: recursively collect ALL privilege IDs from parents and their parents.
+   */
+  static async collectPrivilegesFromParents(parentIds, visited = new Set()) {
+    if (!parentIds || parentIds.length === 0) return [];
+
+    const uniqueParentIds = [...new Set(parentIds)].filter(
+      id => !isNaN(id) && !visited.has(id)
+    );
+    if (uniqueParentIds.length === 0) return [];
+
+    uniqueParentIds.forEach(id => visited.add(id));
+
+    const binds = {};
+    const placeholders = uniqueParentIds
+      .map((id, idx) => {
+        const key = `parentId${idx}`;
+        binds[key] = id;
+        return `:${key}`;
+      })
+      .join(',');
+
+    const sql = `
+      SELECT DUTY_ROLE_ID, FUNCTION_PRIVILEGES, INHERITED_FROM_ROLES
+        FROM SEC.DUTY_ROLES
+       WHERE DUTY_ROLE_ID IN (${placeholders})
+    `;
+
+    try {
+      const result = await executeQuery(sql, binds);
+      const allPrivilegeIds = new Set();
+
+      if (!result || !result.rows || result.rows.length === 0) {
+        return [];
+      }
+
+      for (const row of result.rows) {
+        // explicit privileges on this parent
+        if (row.FUNCTION_PRIVILEGES) {
+          const explicitIds = this.decodeIdArray(row.FUNCTION_PRIVILEGES);
+          explicitIds.forEach(id => allPrivilegeIds.add(id));
+        }
+
+        // recursively from parent's parents
+        if (row.INHERITED_FROM_ROLES) {
+          const grandParentIds = this.decodeIdArray(row.INHERITED_FROM_ROLES);
+          if (grandParentIds.length > 0) {
+            const grandParentPrivileges = await this.collectPrivilegesFromParents(
+              grandParentIds,
+              visited
+            );
+            grandParentPrivileges.forEach(id => allPrivilegeIds.add(id));
+          }
+        }
+      }
+
+      return Array.from(allPrivilegeIds);
+    } catch (error) {
+      console.error('Error in collectPrivilegesFromParents:', error);
+      console.error('Parent IDs:', parentIds);
+      throw error;
+    }
+  }
+
+  /**
+   * Decode INHERITED_FROM_ROLES / INHERITED_CHILD_ROLES to minimal duty role objects.
+   */
+  static async decodeDutyRoleArray(encodedValue) {
+    if (!encodedValue) return [];
+
+    try {
+      let value = encodedValue;
+
+      if (typeof value === 'string') {
+        try {
+          value = JSON.parse(value);
+        } catch (e) {
+          const idList = value
+            .split(',')
+            .map(id => parseInt(id.trim(), 10))
+            .filter(id => !isNaN(id));
+
+          if (idList.length === 0) return [];
+          return await this.fetchDutyRolesByIds(idList);
+        }
+      }
+
+      if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object') {
+        return value
+          .map(dr => ({
+            duty_role_id:
+              dr.duty_role_id ??
+              dr.DUTY_ROLE_ID ??
+              dr.id ??
+              null,
+            duty_role_name:
+              dr.duty_role_name ??
+              dr.DUTY_ROLE_NAME ??
+              dr.name ??
+              null,
+            role_code:
+              dr.role_code ??
+              dr.ROLE_CODE ??
+              dr.code ??
+              null,
+            status:
+              dr.status ??
+              dr.STATUS ??
+              null
+          }))
+          .filter(dr => dr.duty_role_id !== null);
+      }
+
+      if (Array.isArray(value)) {
+        const idList = value
+          .map(v =>
+            typeof v === 'number'
+              ? v
+              : parseInt(v, 10)
+          )
+          .filter(id => !isNaN(id));
+
+        if (idList.length === 0) return [];
+        return await this.fetchDutyRolesByIds(idList);
+      }
+
+      console.error('Unsupported INHERITED_* format:', encodedValue);
+      return [];
+    } catch (error) {
+      console.error('Error decoding duty role array:', error, 'value=', encodedValue);
+      return [];
+    }
+  }
+
+  /**
+   * Compute EFFECTIVE privileges:
+   *  explicit (this role) + inherited from all parents (recursively).
+   *
+   * Returns array of privilege objects with an `inherited` flag.
+   */
+  static async computeEffectivePrivileges(row) {
+    try {
+      const privilegesRaw = row.FUNCTION_PRIVILEGES || row.function_privileges || null;
+      const inheritedFromRaw = row.INHERITED_FROM_ROLES || row.inherited_from_roles || null;
+      
+      const explicitIds = this.decodeIdArray(privilegesRaw);
+      const parentIds = this.decodeIdArray(inheritedFromRaw);
+      
+      // Collect inherited privileges from all parents (recursively)
+      const inheritedIds = await this.collectPrivilegesFromParents(parentIds);
+
+      // Merge explicit + inherited (deduplicate)
+      const allIds = [...new Set([...explicitIds, ...inheritedIds])];
+
+      if (allIds.length === 0) return [];
+      
+      // Fetch full privilege objects
+      const privileges = await Promise.all(
+        allIds.map((id) => FunctionPrivilegeModel.getById(id))
+      );
+      const validPrivileges = privileges.filter((p) => p != null);
+      
+      // Add inherited flag to each privilege
+      const inheritedIdsSet = new Set(inheritedIds);
+      
+      return validPrivileges.map(priv => ({
+        ...priv,
+        inherited: inheritedIdsSet.has(priv.PRIVILEGE_ID || priv.privilege_id)
+      }));
+    } catch (error) {
+      console.error('Error in computeEffectivePrivileges:', error);
+      console.error('Row data:', { 
+        DUTY_ROLE_ID: row.DUTY_ROLE_ID || row.duty_role_id,
+        FUNCTION_PRIVILEGES: row.FUNCTION_PRIVILEGES || row.function_privileges, 
+        INHERITED_FROM_ROLES: row.INHERITED_FROM_ROLES || row.inherited_from_roles 
+      });
+      // Return at least explicit privileges if computation fails
+      const privilegesRaw = row.FUNCTION_PRIVILEGES || row.function_privileges || null;
+      const explicitIds = this.decodeIdArray(privilegesRaw);
+      if (explicitIds.length === 0) return [];
+      const privileges = await Promise.all(
+        explicitIds.map((id) => FunctionPrivilegeModel.getById(id))
+      );
+      const validPrivileges = privileges.filter((p) => p != null);
+      return validPrivileges.map(priv => ({
+        ...priv,
+        inherited: false
+      }));
+    }
+  }
+
+  /**
    * Get all duty roles with pagination and search
    * @param {number} page - Page number (1-based)
    * @param {number} limit - Number of records per page
@@ -241,6 +529,8 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
         M.MODULE_NAME,
         DR.STATUS,
         DR.FUNCTION_PRIVILEGES,
+        DR.INHERITED_FROM_ROLES,
+        DR.INHERITED_CHILD_ROLES,
         DR.CREATED_AT,
         DR.CREATED_BY,
         DR.UPDATED_AT,
@@ -253,19 +543,24 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
     `;
     const dataResult = await executeQuery(dataQuery, dataBinds);
     
-    // Decode function privileges for each record
-    const dataWithDecodedPrivileges = await Promise.all(
+    // Decode effective privileges + inherited_from_roles + inherited_child_roles for each record
+    const dataWithDecoded = await Promise.all(
       dataResult.rows.map(async (row) => {
-        const decodedPrivileges = await this.decodeFunctionPrivileges(row.FUNCTION_PRIVILEGES);
+        const effectivePrivileges = await this.computeEffectivePrivileges(row);
+        const decodedInheritedFrom = await this.decodeDutyRoleArray(row.INHERITED_FROM_ROLES);
+        const decodedInheritedChild = await this.decodeDutyRoleArray(row.INHERITED_CHILD_ROLES);
+
         return {
           ...row,
-          FUNCTION_PRIVILEGES_DECODED: decodedPrivileges
+          FUNCTION_PRIVILEGES_DECODED: effectivePrivileges,
+          INHERITED_FROM_ROLES_DECODED: decodedInheritedFrom,
+          INHERITED_CHILD_ROLES_DECODED: decodedInheritedChild
         };
       })
     );
     
     return {
-      data: dataWithDecodedPrivileges,
+      data: dataWithDecoded,
       total,
       page,
       limit,
@@ -293,6 +588,8 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
         M.MODULE_NAME,
         DR.STATUS,
         DR.FUNCTION_PRIVILEGES,
+        DR.INHERITED_FROM_ROLES,
+        DR.INHERITED_CHILD_ROLES,
         DR.CREATED_AT,
         DR.CREATED_BY,
         DR.UPDATED_AT,
@@ -308,26 +605,23 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
     }
 
     const row = result.rows[0];
-    // Decode function privileges
-    const decodedPrivileges = await this.decodeFunctionPrivileges(row.FUNCTION_PRIVILEGES);
-    
+    const effectivePrivileges = await this.computeEffectivePrivileges(row);
+    const decodedInheritedFrom = await this.decodeDutyRoleArray(row.INHERITED_FROM_ROLES);
+    const decodedInheritedChild = await this.decodeDutyRoleArray(row.INHERITED_CHILD_ROLES);
+
     return {
       ...row,
-      FUNCTION_PRIVILEGES_DECODED: decodedPrivileges
+      FUNCTION_PRIVILEGES_DECODED: effectivePrivileges,
+      INHERITED_FROM_ROLES_DECODED: decodedInheritedFrom,
+      INHERITED_CHILD_ROLES_DECODED: decodedInheritedChild
     };
   }
 
   /**
    * Create a new duty role
-   * @param {Object} dutyRoleData - Duty role data
-   * @param {string} dutyRoleData.dutyRoleName - Duty role name
-   * @param {string} dutyRoleData.roleCode - Role code
-   * @param {string} dutyRoleData.description - Description
-   * @param {number} dutyRoleData.moduleId - Module ID
-   * @param {Array} dutyRoleData.functionPrivileges - Array of privilege IDs or privilege objects
-   * @param {string} dutyRoleData.status - Status (default: 'ACTIVE')
-   * @param {string} dutyRoleData.createdBy - Created by user (default: 'SYSTEM')
-   * @returns {Promise<Object>} - Created duty role object
+   * - FUNCTION_PRIVILEGES column stores only EXPLICIT privilege IDs.
+   * - INHERITED_FROM_ROLES sets parents.
+   * - Parents' INHERITED_CHILD_ROLES is updated to include this child.
    */
   static async create(dutyRoleData) {
     const connection = await getConnection();
@@ -338,59 +632,120 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
         description,
         moduleId,
         functionPrivileges,
+        inheritedFromRoles,
         status = 'ACTIVE',
         createdBy = 'SYSTEM'
       } = dutyRoleData;
 
-      // Validate required fields
       if (!dutyRoleName || !roleCode) {
         throw new Error('dutyRoleName and roleCode are required');
       }
 
-      // Encode function privileges
-      const encodedPrivileges = this.encodeFunctionPrivileges(functionPrivileges);
+      // normalize parents
+      const parentIds = Array.isArray(inheritedFromRoles)
+        ? inheritedFromRoles
+            .map(v => (typeof v === 'number' ? v : parseInt(v, 10)))
+            .filter(v => !isNaN(v))
+        : [];
 
-      // Insert new duty role
+      // explicit privileges only
+      const encodedPrivileges = this.encodeFunctionPrivileges(functionPrivileges || []);
+
+      const encodedInheritedFrom =
+        parentIds.length > 0 ? this.encodeIdArray(parentIds) : null;
+
+      const columns = [
+        'DUTY_ROLE_NAME',
+        'ROLE_CODE',
+        'DESCRIPTION',
+        'MODULE_ID',
+        'STATUS',
+        'CREATED_BY',
+        'CREATED_AT'
+      ];
+      const values = [
+        ':dutyRoleName',
+        ':roleCode',
+        ':description',
+        ':moduleId',
+        ':status',
+        ':createdBy',
+        'SYSTIMESTAMP'
+      ];
+      const binds = {
+        dutyRoleName,
+        roleCode,
+        description: description || null,
+        moduleId: moduleId ? parseInt(moduleId) : null,
+        status,
+        createdBy,
+        dutyRoleId: { type: oracledb.NUMBER, dir: oracledb.BIND_OUT }
+      };
+
+      if (encodedPrivileges !== null) {
+        columns.splice(4, 0, 'FUNCTION_PRIVILEGES'); // after MODULE_ID
+        values.splice(4, 0, ':functionPrivileges');
+        binds.functionPrivileges = encodedPrivileges;
+      }
+
+      if (encodedInheritedFrom !== null) {
+        columns.splice(5, 0, 'INHERITED_FROM_ROLES'); // after FUNCTION_PRIVILEGES
+        values.splice(5, 0, ':inheritedFromRoles');
+        binds.inheritedFromRoles = encodedInheritedFrom;
+      }
+
       const result = await connection.execute(
         `INSERT INTO SEC.DUTY_ROLES (
-          DUTY_ROLE_NAME,
-          ROLE_CODE,
-          DESCRIPTION,
-          MODULE_ID,
-          FUNCTION_PRIVILEGES,
-          STATUS,
-          CREATED_BY,
-          CREATED_AT
+          ${columns.join(', ')}
         ) VALUES (
-          :dutyRoleName,
-          :roleCode,
-          :description,
-          :moduleId,
-          :functionPrivileges,
-          :status,
-          :createdBy,
-          SYSTIMESTAMP
+          ${values.join(', ')}
         )
         RETURNING DUTY_ROLE_ID INTO :dutyRoleId`,
-        {
-          dutyRoleName,
-          roleCode,
-          description: description || null,
-          moduleId: moduleId ? parseInt(moduleId) : null,
-          functionPrivileges: encodedPrivileges,
-          status,
-          createdBy,
-          dutyRoleId: { type: oracledb.NUMBER, dir: oracledb.BIND_OUT }
-        },
-        { autoCommit: true }
+        binds,
+        { autoCommit: false }
       );
 
       const dutyRoleId = result.outBinds.dutyRoleId[0];
+
+      // sync: add this child to each parent's INHERITED_CHILD_ROLES list
+      for (const parentId of parentIds) {
+        const parentRes = await connection.execute(
+          `SELECT INHERITED_CHILD_ROLES
+             FROM SEC.DUTY_ROLES
+            WHERE DUTY_ROLE_ID = :parentId`,
+          { parentId },
+          { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
+
+        if (parentRes.rows.length === 0) continue;
+
+        const existingChildrenEncoded = parentRes.rows[0].INHERITED_CHILD_ROLES;
+        const existingChildrenIds = this.decodeIdArray(existingChildrenEncoded);
+
+        if (!existingChildrenIds.includes(dutyRoleId)) {
+          const newChildrenIds = [...existingChildrenIds, dutyRoleId];
+          const encodedChildren = this.encodeIdArray(newChildrenIds);
+
+          await connection.execute(
+            `UPDATE SEC.DUTY_ROLES
+                SET INHERITED_CHILD_ROLES = :inheritedChildRoles,
+                    UPDATED_AT = SYSTIMESTAMP
+              WHERE DUTY_ROLE_ID = :parentId`,
+            {
+              inheritedChildRoles: encodedChildren,
+              parentId
+            },
+            { autoCommit: false }
+          );
+        }
+      }
+
+      await connection.commit();
       await connection.close();
       
-      // Return the created duty role
       return await this.getById(dutyRoleId);
     } catch (error) {
+      try { await connection.rollback(); } catch (_) {}
       await connection.close();
       throw error;
     }
@@ -398,16 +753,9 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
 
   /**
    * Update a duty role
-   * @param {number} dutyRoleId - Duty Role ID
-   * @param {Object} dutyRoleData - Duty role data to update
-   * @param {string} dutyRoleData.dutyRoleName - Duty role name
-   * @param {string} dutyRoleData.roleCode - Role code
-   * @param {string} dutyRoleData.description - Description
-   * @param {number} dutyRoleData.moduleId - Module ID
-   * @param {Array} dutyRoleData.functionPrivileges - Array of privilege IDs or privilege objects
-   * @param {string} dutyRoleData.status - Status
-   * @param {string} dutyRoleData.updatedBy - Updated by user
-   * @returns {Promise<Object>} - Updated duty role object
+   * - functionPrivileges modifies only EXPLICIT privileges.
+   * - inheritedFromRoles modifies parent links and keeps INHERITED_CHILD_ROLES in sync.
+   * - effective privileges are computed at read-time.
    */
   static async update(dutyRoleId, dutyRoleData) {
     const connection = await getConnection();
@@ -418,11 +766,28 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
         description,
         moduleId,
         functionPrivileges,
+        inheritedFromRoles,
         status,
         updatedBy = 'SYSTEM'
       } = dutyRoleData;
 
-      // Build UPDATE SET clause dynamically based on provided fields
+      // get current parents and explicit privileges for validation
+      const currentRes = await connection.execute(
+        `SELECT INHERITED_FROM_ROLES, FUNCTION_PRIVILEGES
+           FROM SEC.DUTY_ROLES
+          WHERE DUTY_ROLE_ID = :dutyRoleId`,
+        { dutyRoleId },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+
+      if (currentRes.rows.length === 0) {
+        await connection.close();
+        return null; // not found
+      }
+
+      const existingParentIds = this.decodeIdArray(currentRes.rows[0].INHERITED_FROM_ROLES);
+      const currentExplicitPrivilegeIds = this.decodeIdArray(currentRes.rows[0].FUNCTION_PRIVILEGES);
+
       const updates = [];
       const binds = { dutyRoleId };
 
@@ -446,8 +811,54 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
         binds.moduleId = moduleId ? parseInt(moduleId) : null;
       }
 
+      // parents
+      let newParentIds = existingParentIds;
+      let inheritedFromChanged = false;
+
+      if (inheritedFromRoles !== undefined) {
+        inheritedFromChanged = true;
+        newParentIds = Array.isArray(inheritedFromRoles)
+          ? inheritedFromRoles
+              .map(v => (typeof v === 'number' ? v : parseInt(v, 10)))
+              .filter(v => !isNaN(v))
+          : [];
+
+        const encodedInheritedFrom = this.encodeIdArray(newParentIds);
+        updates.push('INHERITED_FROM_ROLES = :inheritedFromRoles');
+        binds.inheritedFromRoles = encodedInheritedFrom;
+      }
+
+      // explicit privileges
       if (functionPrivileges !== undefined) {
-        const encodedPrivileges = this.encodeFunctionPrivileges(functionPrivileges);
+        // Validate: prevent removing inherited privileges
+        const parentIdsForValidation = inheritedFromChanged ? newParentIds : existingParentIds;
+        const currentInheritedPrivilegeIds = await this.collectPrivilegesFromParents(parentIdsForValidation);
+        
+        const newExplicitIds = Array.isArray(functionPrivileges)
+          ? functionPrivileges
+              .map(v => {
+                if (typeof v === 'number') return v;
+                if (typeof v === 'object' && v.privilege_id) return v.privilege_id;
+                if (typeof v === 'object' && v.PRIVILEGE_ID) return v.PRIVILEGE_ID;
+                return parseInt(v, 10);
+              })
+              .filter(v => !isNaN(v))
+          : [];
+        
+        const newEffectiveIds = [...new Set([...newExplicitIds, ...currentInheritedPrivilegeIds])];
+        
+        const removedInheritedIds = currentInheritedPrivilegeIds.filter(
+          id => !newEffectiveIds.includes(id)
+        );
+        
+        if (removedInheritedIds.length > 0) {
+          await connection.close();
+          throw new Error(
+            `Cannot remove inherited privilege(s): ${removedInheritedIds.join(', ')}. Inherited privileges cannot be removed.`
+          );
+        }
+        
+        const encodedPrivileges = this.encodeFunctionPrivileges(functionPrivileges || []);
         updates.push('FUNCTION_PRIVILEGES = :functionPrivileges');
         binds.functionPrivileges = encodedPrivileges;
       }
@@ -461,28 +872,102 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
         throw new Error('No fields to update');
       }
 
-      // Always update UPDATED_AT and UPDATED_BY
       updates.push('UPDATED_AT = SYSTIMESTAMP');
       updates.push('UPDATED_BY = :updatedBy');
       binds.updatedBy = updatedBy;
 
       const updateQuery = `
         UPDATE SEC.DUTY_ROLES 
-        SET ${updates.join(', ')}
-        WHERE DUTY_ROLE_ID = :dutyRoleId
+           SET ${updates.join(', ')}
+         WHERE DUTY_ROLE_ID = :dutyRoleId
       `;
 
-      const result = await connection.execute(updateQuery, binds, { autoCommit: true });
-      
-      await connection.close();
+      const result = await connection.execute(updateQuery, binds, { autoCommit: false });
 
       if (result.rowsAffected === 0) {
-        return null; // Duty role not found
+        await connection.rollback();
+        await connection.close();
+        return null;
       }
 
-      // Return the updated duty role
+      // sync parents' INHERITED_CHILD_ROLES arrays if parents changed
+      if (inheritedFromChanged) {
+        const parentsToAdd = newParentIds.filter(id => !existingParentIds.includes(id));
+        const parentsToRemove = existingParentIds.filter(id => !newParentIds.includes(id));
+
+        // ensure all current parents contain this child
+        for (const parentId of newParentIds) {
+          const parentRes = await connection.execute(
+            `SELECT INHERITED_CHILD_ROLES
+               FROM SEC.DUTY_ROLES
+              WHERE DUTY_ROLE_ID = :parentId`,
+            { parentId },
+            { outFormat: oracledb.OUT_FORMAT_OBJECT }
+          );
+
+          if (parentRes.rows.length === 0) continue;
+
+          const existingChildrenEncoded = parentRes.rows[0].INHERITED_CHILD_ROLES;
+          const existingChildrenIds = this.decodeIdArray(existingChildrenEncoded);
+
+          if (!existingChildrenIds.includes(dutyRoleId)) {
+            const newChildrenIds = [...existingChildrenIds, dutyRoleId];
+            const encodedChildren = this.encodeIdArray(newChildrenIds);
+
+            await connection.execute(
+              `UPDATE SEC.DUTY_ROLES
+                  SET INHERITED_CHILD_ROLES = :inheritedChildRoles,
+                      UPDATED_AT = SYSTIMESTAMP
+                WHERE DUTY_ROLE_ID = :parentId`,
+              {
+                inheritedChildRoles: encodedChildren,
+                parentId
+              },
+              { autoCommit: false }
+            );
+          }
+        }
+
+        // remove this child from removed parents
+        for (const parentId of parentsToRemove) {
+          const parentRes = await connection.execute(
+            `SELECT INHERITED_CHILD_ROLES
+               FROM SEC.DUTY_ROLES
+              WHERE DUTY_ROLE_ID = :parentId`,
+            { parentId },
+            { outFormat: oracledb.OUT_FORMAT_OBJECT }
+          );
+
+          if (parentRes.rows.length === 0) continue;
+
+          const existingChildrenEncoded = parentRes.rows[0].INHERITED_CHILD_ROLES;
+          const existingChildrenIds = this.decodeIdArray(existingChildrenEncoded);
+
+          if (existingChildrenIds.includes(dutyRoleId)) {
+            const newChildrenIds = existingChildrenIds.filter(id => id !== dutyRoleId);
+            const encodedChildren = this.encodeIdArray(newChildrenIds);
+
+            await connection.execute(
+              `UPDATE SEC.DUTY_ROLES
+                  SET INHERITED_CHILD_ROLES = :inheritedChildRoles,
+                      UPDATED_AT = SYSTIMESTAMP
+                WHERE DUTY_ROLE_ID = :parentId`,
+              {
+                inheritedChildRoles: encodedChildren,
+                parentId
+              },
+              { autoCommit: false }
+            );
+          }
+        }
+      }
+
+      await connection.commit();
+      await connection.close();
+
       return await this.getById(dutyRoleId);
     } catch (error) {
+      try { await connection.rollback(); } catch (_) {}
       await connection.close();
       throw error;
     }
@@ -490,22 +975,144 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
 
   /**
    * Delete a duty role
-   * @param {number} dutyRoleId - Duty Role ID
-   * @returns {Promise<boolean>} - True if deleted, false if not found
+   *
+   * Behavior:
+   * - NOT allowed if this role has parents (check INHERITED_FROM_ROLES column).
+   * - If this role is a parent:
+   *    • children with ONLY this parent  → deleted (cascade one level)
+   *    • children with multiple parents → keep, remove this parent from their INHERITED_FROM_ROLES
+   * - Remove this role from all parents' INHERITED_CHILD_ROLES arrays.
    */
   static async delete(dutyRoleId) {
     const connection = await getConnection();
+
     try {
-      const result = await connection.execute(
-        'DELETE FROM SEC.DUTY_ROLES WHERE DUTY_ROLE_ID = :dutyRoleId',
+      // Confirm role exists and check if it has parents
+      const existsResult = await connection.execute(
+        `SELECT DUTY_ROLE_ID, INHERITED_FROM_ROLES
+           FROM SEC.DUTY_ROLES
+          WHERE DUTY_ROLE_ID = :dutyRoleId`,
         { dutyRoleId },
-        { autoCommit: true }
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
       );
 
+      if (existsResult.rows.length === 0) {
+        await connection.close();
+        return false;
+      }
+
+      // Check if this role has parents - prevent deletion if yes
+      const currentParentIds = this.decodeIdArray(existsResult.rows[0].INHERITED_FROM_ROLES);
+      if (currentParentIds.length > 0) {
+        try {
+          await connection.close();
+        } catch (closeError) {}
+        throw new Error(
+          `Cannot delete duty role ${dutyRoleId} because it inherits from other role(s): ${currentParentIds.join(', ')}. Delete all parent roles first.`
+        );
+      }
+
+      // 1) Handle children (roles that inherit FROM this role)
+      const childrenResult = await connection.execute(
+        `SELECT DUTY_ROLE_ID, INHERITED_FROM_ROLES
+           FROM SEC.DUTY_ROLES
+          WHERE INHERITED_FROM_ROLES IS NOT NULL`,
+        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+
+      const childrenToDelete = [];
+
+      for (const row of childrenResult.rows) {
+        const childId = row.DUTY_ROLE_ID;
+        const parentIds = this.decodeIdArray(row.INHERITED_FROM_ROLES);
+
+        if (!parentIds.includes(dutyRoleId)) continue;
+
+        const newParents = parentIds.filter(id => id !== dutyRoleId);
+
+        if (newParents.length === 0) {
+          childrenToDelete.push(childId);
+        } else {
+          const encodedParents = this.encodeIdArray(newParents);
+
+          await connection.execute(
+            `UPDATE SEC.DUTY_ROLES
+                SET INHERITED_FROM_ROLES = :inheritedFromRoles,
+                    UPDATED_AT = SYSTIMESTAMP
+              WHERE DUTY_ROLE_ID = :childId`,
+            {
+              inheritedFromRoles: encodedParents,
+              childId
+            },
+            { autoCommit: false }
+          );
+        }
+      }
+
+      // 2) Remove this role from all parents' INHERITED_CHILD_ROLES arrays
+      const parentsResult = await connection.execute(
+        `SELECT DUTY_ROLE_ID, INHERITED_CHILD_ROLES
+           FROM SEC.DUTY_ROLES
+          WHERE INHERITED_CHILD_ROLES IS NOT NULL`,
+        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+
+      for (const row of parentsResult.rows) {
+        const parentId = row.DUTY_ROLE_ID;
+        const childIds = this.decodeIdArray(row.INHERITED_CHILD_ROLES);
+
+        if (!childIds.includes(dutyRoleId)) continue;
+
+        const newChildren = childIds.filter(id => id !== dutyRoleId);
+        const encodedChildren = this.encodeIdArray(newChildren);
+
+        await connection.execute(
+          `UPDATE SEC.DUTY_ROLES
+              SET INHERITED_CHILD_ROLES = :inheritedChildRoles,
+                  UPDATED_AT = SYSTIMESTAMP
+            WHERE DUTY_ROLE_ID = :parentId`,
+          {
+            inheritedChildRoles: encodedChildren,
+            parentId
+          },
+          { autoCommit: false }
+        );
+      }
+
+      // 3) Cascade delete children that only had this parent
+      for (const childId of childrenToDelete) {
+        await connection.execute(
+          `DELETE FROM SEC.DUTY_ROLES
+            WHERE DUTY_ROLE_ID = :childId`,
+          { childId },
+          { autoCommit: false }
+        );
+      }
+
+      // 4) Delete this role
+      const deleteResult = await connection.execute(
+        `DELETE FROM SEC.DUTY_ROLES
+          WHERE DUTY_ROLE_ID = :dutyRoleId`,
+        { dutyRoleId },
+        { autoCommit: false }
+      );
+
+      const deleted = deleteResult.rowsAffected > 0;
+
+      await connection.commit();
       await connection.close();
-      return result.rowsAffected > 0;
+      return deleted;
     } catch (error) {
-      await connection.close();
+      if (connection) {
+        try {
+          await connection.rollback();
+        } catch (rollbackError) {}
+        try {
+          await connection.close();
+        } catch (closeError) {}
+      }
       throw error;
     }
   }
@@ -612,7 +1219,9 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
     try {
       // Get current duty role
       const currentRole = await executeQuery(
-        'SELECT FUNCTION_PRIVILEGES FROM SEC.DUTY_ROLES WHERE DUTY_ROLE_ID = :dutyRoleId',
+        `SELECT FUNCTION_PRIVILEGES, INHERITED_FROM_ROLES
+           FROM SEC.DUTY_ROLES
+          WHERE DUTY_ROLE_ID = :dutyRoleId`,
         { dutyRoleId }
       );
 
@@ -623,8 +1232,18 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
 
       // Get existing privilege IDs
       const existingEncoded = currentRole.rows[0].FUNCTION_PRIVILEGES;
-      const existingPrivileges = await this.decodeFunctionPrivileges(existingEncoded);
-      const existingIds = existingPrivileges.map(p => p.PRIVILEGE_ID || p.privilege_id);
+      const existingIds = this.decodeIdArray(existingEncoded);
+      
+      // Check if this privilege is inherited
+      const parentIds = this.decodeIdArray(currentRole.rows[0].INHERITED_FROM_ROLES);
+      const inheritedPrivilegeIds = await this.collectPrivilegesFromParents(parentIds);
+      
+      if (inheritedPrivilegeIds.includes(privilegeId)) {
+        await connection.close();
+        throw new Error(
+          `Cannot remove privilege ${privilegeId} because it is inherited from parent role(s). Inherited privileges cannot be removed.`
+        );
+      }
 
       // Check if privilege is already removed
       if (!existingIds.includes(privilegeId)) {
@@ -641,7 +1260,7 @@ static async decodeFunctionPrivileges(encodedPrivileges) {
       const filteredIds = existingIds.filter(id => id !== privilegeId);
 
       // Encode the filtered privilege IDs
-      const encodedPrivileges = this.encodeFunctionPrivileges(filteredIds);
+      const encodedPrivileges = this.encodeIdArray(filteredIds);
 
       // Update the duty role
       const result = await connection.execute(
