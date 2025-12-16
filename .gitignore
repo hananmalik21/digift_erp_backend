@@ -4,19 +4,18 @@ package-lock.json
 yarn.lock
 
 # Environment variables
-.env
 
 # Logs
 logs/
 *.log
 npm-debug.log*
+temp_auto_push.bat
 
 # OS files
 .DS_Store
 Thumbs.db
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -24,3 +23,6 @@ Thumbs.db
 # Wallet files (keep structure but ignore sensitive files if needed)
 # TESTDB/
 
+.gitignore
+branch_structure.json
+config.bat

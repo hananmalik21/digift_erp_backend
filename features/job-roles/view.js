@@ -13,25 +13,26 @@ export class JobRoleView {
     ).length;
     
     const transformedData = result.data.map(item => {
-      const lowerCaseItem = toLowerCaseKeys(item);
+      // Extract decoded arrays BEFORE toLowerCaseKeys to avoid double conversion
+      const dutyRolesDecoded = item.DUTY_ROLES_DECODED || null;
+      const inheritedFromDecoded = item.INHERITED_FROM_DECODED || null;
+      const inheritedDecoded = item.INHERITED_DECODED || null;
 
-      // duty_roles
-      if (lowerCaseItem.duty_roles_decoded) {
-        lowerCaseItem.duty_roles = lowerCaseItem.duty_roles_decoded;
-      }
-      delete lowerCaseItem.duty_roles_decoded;
+      // Remove encoded fields from original item before converting
+      const cleanedItem = { ...item };
+      delete cleanedItem.DUTY_ROLES;
+      delete cleanedItem.INHERITED_FROM;
+      delete cleanedItem.INHERITED;
+      delete cleanedItem.DUTY_ROLES_DECODED;
+      delete cleanedItem.INHERITED_FROM_DECODED;
+      delete cleanedItem.INHERITED_DECODED;
 
-      // inherited_from
-      if (lowerCaseItem.inherited_from_decoded) {
-        lowerCaseItem.inherited_from = lowerCaseItem.inherited_from_decoded;
-      }
-      delete lowerCaseItem.inherited_from_decoded;
+      const lowerCaseItem = toLowerCaseKeys(cleanedItem);
 
-      // inherited
-      if (lowerCaseItem.inherited_decoded) {
-        lowerCaseItem.inherited = lowerCaseItem.inherited_decoded;
-      }
-      delete lowerCaseItem.inherited_decoded;
+      // Add decoded versions
+      lowerCaseItem.duty_roles = dutyRolesDecoded ? toLowerCaseKeys(dutyRolesDecoded) : [];
+      lowerCaseItem.inherited_from = inheritedFromDecoded ? toLowerCaseKeys(inheritedFromDecoded) : [];
+      lowerCaseItem.inherited = inheritedDecoded ? toLowerCaseKeys(inheritedDecoded) : [];
 
       return lowerCaseItem;
     });
@@ -67,22 +68,26 @@ export class JobRoleView {
       };
     }
     
-    const lowerCaseItem = toLowerCaseKeys(jobRoleData);
+    // Extract decoded arrays BEFORE toLowerCaseKeys to avoid double conversion
+    const dutyRolesDecoded = jobRoleData.DUTY_ROLES_DECODED || null;
+    const inheritedFromDecoded = jobRoleData.INHERITED_FROM_DECODED || null;
+    const inheritedDecoded = jobRoleData.INHERITED_DECODED || null;
 
-    if (lowerCaseItem.duty_roles_decoded) {
-      lowerCaseItem.duty_roles = lowerCaseItem.duty_roles_decoded;
-    }
-    delete lowerCaseItem.duty_roles_decoded;
+    // Remove encoded fields from original data before converting
+    const cleanedData = { ...jobRoleData };
+    delete cleanedData.DUTY_ROLES;
+    delete cleanedData.INHERITED_FROM;
+    delete cleanedData.INHERITED;
+    delete cleanedData.DUTY_ROLES_DECODED;
+    delete cleanedData.INHERITED_FROM_DECODED;
+    delete cleanedData.INHERITED_DECODED;
 
-    if (lowerCaseItem.inherited_from_decoded) {
-      lowerCaseItem.inherited_from = lowerCaseItem.inherited_from_decoded;
-    }
-    delete lowerCaseItem.inherited_from_decoded;
+    const lowerCaseItem = toLowerCaseKeys(cleanedData);
 
-    if (lowerCaseItem.inherited_decoded) {
-      lowerCaseItem.inherited = lowerCaseItem.inherited_decoded;
-    }
-    delete lowerCaseItem.inherited_decoded;
+    // Add decoded versions
+    lowerCaseItem.duty_roles = dutyRolesDecoded ? toLowerCaseKeys(dutyRolesDecoded) : [];
+    lowerCaseItem.inherited_from = inheritedFromDecoded ? toLowerCaseKeys(inheritedFromDecoded) : [];
+    lowerCaseItem.inherited = inheritedDecoded ? toLowerCaseKeys(inheritedDecoded) : [];
     
     return {
       success: true,

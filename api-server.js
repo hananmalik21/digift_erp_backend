@@ -7,6 +7,7 @@ import operationRoutes from './features/operations/routes.js';
 import functionPrivilegeRoutes from './features/function-privileges/routes.js';
 import dutyRoleRoutes from './features/duty-roles/routes.js';
 import jobRoleRoutes from './features/job-roles/routes.js';
+import userRoutes from './features/users/routes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -39,6 +40,7 @@ app.use('/api/operations', operationRoutes);
 app.use('/api/function-privileges', functionPrivilegeRoutes);
 app.use('/api/duty-roles', dutyRoleRoutes);
 app.use('/api/job-roles', jobRoleRoutes);
+app.use('/api/users', userRoutes);
 
 // ==========================================
 // 📌 404 HANDLER
@@ -80,7 +82,10 @@ app.use((req, res) => {
       'GET    /api/job-roles/:id',
       'POST   /api/job-roles',
       'PUT    /api/job-roles/:id',
-      'DELETE /api/job-roles/:id'
+      'DELETE /api/job-roles/:id',
+      'GET    /api/users?page=1&limit=10',
+      'GET    /api/users/:id',
+      'POST   /api/users/accounts'
     ]
   });
 });
@@ -124,6 +129,9 @@ const server = app.listen(PORT, () => {
     console.log(`   POST   http://localhost:${PORT}/api/job-roles`);
     console.log(`   PUT    http://localhost:${PORT}/api/job-roles/:id`);
     console.log(`   DELETE http://localhost:${PORT}/api/job-roles/:id`);
+    console.log(`   GET    http://localhost:${PORT}/api/users?page=1&limit=10`);
+    console.log(`   GET    http://localhost:${PORT}/api/users/:id`);
+    console.log(`   POST   http://localhost:${PORT}/api/users/accounts`);
   console.log('\n✨ Ready to accept requests!\n');
 });
 
