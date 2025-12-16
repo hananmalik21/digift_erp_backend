@@ -1,5 +1,7 @@
 import { executeQuery, getConnection } from '../../config/db.js';
 import oracledb from 'oracledb';
+import { DutyRoleModel } from '../duty-roles/model.js';
+import { FunctionPrivilegeModel } from '../function-privileges/model.js';
 
 /**
  * Job Role Model - Database operations for SEC.JOB_ROLES table
@@ -104,9 +106,9 @@ export class JobRoleModel {
   }
 
   /**
-   * Helper: fetch duty roles by IDs (only 3 fields)
+   * Helper: fetch duty roles by IDs (optimized - only essential fields with privileges)
    * @param {number[]} idList
-   * @returns {Promise<Array<{duty_role_id:number, duty_role_name:string, role_code:string}>>}
+   * @returns {Promise<Array>} - Array of duty role objects with privileges (without inherited roles)
    */
   static async fetchDutyRolesByIds(idList) {
     if (!idList || idList.length === 0) return [];
@@ -123,20 +125,111 @@ export class JobRoleModel {
       })
       .join(',');
 
+    // Optimized query - fetch basic fields and FUNCTION_PRIVILEGES in one query
     const sql = `
-      SELECT DUTY_ROLE_ID, DUTY_ROLE_NAME, ROLE_CODE
-        FROM SEC.DUTY_ROLES
-       WHERE DUTY_ROLE_ID IN (${placeholders})
-       ORDER BY DUTY_ROLE_ID
+      SELECT 
+        DR.DUTY_ROLE_ID,
+        DR.DUTY_ROLE_NAME,
+        DR.ROLE_CODE,
+        DR.STATUS,
+        DR.MODULE_ID,
+        M.MODULE_NAME,
+        DR.DESCRIPTION,
+        DR.FUNCTION_PRIVILEGES
+      FROM SEC.DUTY_ROLES DR
+      LEFT JOIN SEC.MODULES M ON DR.MODULE_ID = M.MODULE_ID
+      WHERE DR.DUTY_ROLE_ID IN (${placeholders})
+      ORDER BY DR.DUTY_ROLE_ID
     `;
 
     const result = await executeQuery(sql, binds);
 
-    return result.rows.map(row => ({
-      duty_role_id: row.DUTY_ROLE_ID,
-      duty_role_name: row.DUTY_ROLE_NAME,
-      role_code: row.ROLE_CODE
-    }));
+    // Step 1: Collect all privilege IDs from all duty roles
+    const allPrivilegeIds = new Set();
+    const dutyRolePrivilegeMap = new Map(); // Maps duty_role_id -> array of privilege IDs
+    
+    result.rows.forEach((row) => {
+      const privilegeIds = DutyRoleModel.decodeIdArray(row.FUNCTION_PRIVILEGES);
+      if (privilegeIds.length > 0) {
+        dutyRolePrivilegeMap.set(row.DUTY_ROLE_ID, privilegeIds);
+        privilegeIds.forEach(id => allPrivilegeIds.add(id));
+      } else {
+        dutyRolePrivilegeMap.set(row.DUTY_ROLE_ID, []);
+      }
+    });
+
+    // Step 2: Batch fetch all privileges in a single query
+    let privilegeMap = new Map(); // Maps privilege_id -> privilege object
+    
+    if (allPrivilegeIds.size > 0) {
+      const privilegeIdsArray = Array.from(allPrivilegeIds);
+      const privilegeBinds = {};
+      const privilegePlaceholders = privilegeIdsArray
+        .map((id, idx) => {
+          const key = `pid${idx}`;
+          privilegeBinds[key] = id;
+          return `:${key}`;
+        })
+        .join(',');
+
+      const privilegeQuery = `
+        SELECT 
+          FP.PRIVILEGE_ID,
+          FP.PRIVILEGE_CODE,
+          FP.PRIVILEGE_NAME,
+          FP.DESCRIPTION,
+          FP.MODULE_ID,
+          M.MODULE_NAME,
+          FP.FUNCTION_ID,
+          F.FUNCTION_NAME,
+          FP.OPERATION_ID,
+          O.OPERATION_NAME,
+          FP.STATUS
+        FROM SEC.FUNCTION_PRIVILEGES FP
+        LEFT JOIN SEC.MODULES M ON FP.MODULE_ID = M.MODULE_ID
+        LEFT JOIN SEC.FUNCTIONS F ON FP.FUNCTION_ID = F.FUNCTION_ID
+        LEFT JOIN SEC.OPERATIONS O ON FP.OPERATION_ID = O.OPERATION_ID
+        WHERE FP.PRIVILEGE_ID IN (${privilegePlaceholders})
+      `;
+
+      const privilegeResult = await executeQuery(privilegeQuery, privilegeBinds);
+      
+      // Build privilege map
+      privilegeResult.rows.forEach(priv => {
+        privilegeMap.set(priv.PRIVILEGE_ID, {
+          privilege_id: priv.PRIVILEGE_ID,
+          privilege_code: priv.PRIVILEGE_CODE,
+          privilege_name: priv.PRIVILEGE_NAME,
+          module_id: priv.MODULE_ID,
+          module_name: priv.MODULE_NAME,
+          function_id: priv.FUNCTION_ID,
+          function_name: priv.FUNCTION_NAME,
+          operation_id: priv.OPERATION_ID,
+          operation_name: priv.OPERATION_NAME
+        });
+      });
+    }
+
+    // Step 3: Build duty roles with privileges from the map
+    const dutyRoles = result.rows.map((row) => {
+      const privilegeIds = dutyRolePrivilegeMap.get(row.DUTY_ROLE_ID) || [];
+      const privileges = privilegeIds
+        .map(pid => privilegeMap.get(pid))
+        .filter(p => p !== undefined);
+
+      return {
+        duty_role_id: row.DUTY_ROLE_ID,
+        duty_role_name: row.DUTY_ROLE_NAME,
+        role_code: row.ROLE_CODE,
+        status: row.STATUS,
+        module_id: row.MODULE_ID,
+        module_name: row.MODULE_NAME,
+        description: row.DESCRIPTION,
+        function_privileges: privileges
+      };
+    });
+
+    return dutyRoles;
   }
 
   /**
@@ -337,17 +430,10 @@ export class JobRoleModel {
 
       if (allIds.length === 0) return [];
       
-      // Fetch full duty role objects
+      // Fetch full duty role objects (without inherited flag - not needed in API)
       const dutyRoles = await this.fetchDutyRolesByIds(allIds);
       
-      // Add inherited flag to each duty role
-      // A duty role is inherited if it comes from a parent (even if also explicitly assigned)
-      const inheritedIdsSet = new Set(inheritedIds);
-      
-      return dutyRoles.map(dr => ({
-        ...dr,
-        inherited: inheritedIdsSet.has(dr.duty_role_id)
-      }));
+      return dutyRoles;
     } catch (error) {
       console.error('Error in computeEffectiveDutyRoles:', error);
       console.error('Row data:', { 
@@ -360,11 +446,7 @@ export class JobRoleModel {
       const explicitIds = this.decodeIdArray(dutyRolesRaw);
       if (explicitIds.length === 0) return [];
       const dutyRoles = await this.fetchDutyRolesByIds(explicitIds);
-      // Mark all as explicit (inherited: false) since we couldn't compute inherited ones
-      return dutyRoles.map(dr => ({
-        ...dr,
-        inherited: false
-      }));
+      return dutyRoles;
     }
   }
 
@@ -449,21 +531,312 @@ export class JobRoleModel {
     `;
     const dataResult = await executeQuery(dataQuery, dataBinds);
     
-    // Decode effective duty roles + inherited_from + inherited for each record
-    const dataWithDecoded = await Promise.all(
-      dataResult.rows.map(async (row) => {
-        const effectiveDutyRoles = await this.computeEffectiveDutyRoles(row);
-        const decodedInheritedFrom = await this.decodeJobRoleArray(row.INHERITED_FROM);
-        const decodedInherited = await this.decodeJobRoleArray(row.INHERITED);
-
-        return {
-          ...row,
-          DUTY_ROLES_DECODED: effectiveDutyRoles,
-          INHERITED_FROM_DECODED: decodedInheritedFrom,
-          INHERITED_DECODED: decodedInherited
-        };
-      })
-    );
+    // OPTIMIZATION: Batch process all job roles at once
+    // Step 1: Collect all unique duty role IDs and parent job role IDs from all job roles
+    const allDutyRoleIds = new Set();
+    const allParentJobRoleIds = new Set();
+    const jobRoleDataMap = new Map(); // Maps job_role_id -> { explicitDutyIds, parentIds, inherited }
+    
+    dataResult.rows.forEach(row => {
+      const jobRoleId = row.JOB_ROLE_ID;
+      const explicitDutyIds = this.decodeIdArray(row.DUTY_ROLES);
+      const parentIds = this.decodeIdArray(row.INHERITED_FROM);
+      const inherited = this.decodeIdArray(row.INHERITED);
+      
+      explicitDutyIds.forEach(id => allDutyRoleIds.add(id));
+      parentIds.forEach(id => allParentJobRoleIds.add(id));
+      
+      jobRoleDataMap.set(jobRoleId, {
+        explicitDutyIds,
+        parentIds,
+        inherited,
+        inheritedFrom: row.INHERITED_FROM,
+        inheritedField: row.INHERITED
+      });
+    });
+    
+    // Step 2: Fetch all parent job roles once (for inherited_from and inherited)
+    let parentJobRoleMap = new Map();
+    if (allParentJobRoleIds.size > 0 || dataResult.rows.some(r => r.INHERITED)) {
+      const allInheritedIds = new Set(allParentJobRoleIds);
+      // Also collect inherited field IDs
+      dataResult.rows.forEach(row => {
+        const inheritedIds = this.decodeIdArray(row.INHERITED);
+        inheritedIds.forEach(id => allInheritedIds.add(id));
+      });
+      
+      if (allInheritedIds.size > 0) {
+        const parentBinds = {};
+        const parentPlaceholders = Array.from(allInheritedIds)
+          .map((id, idx) => {
+            const key = `jid${idx}`;
+            parentBinds[key] = id;
+            return `:${key}`;
+          })
+          .join(',');
+        
+        const parentQuery = `
+          SELECT JOB_ROLE_ID, JOB_ROLE_CODE, JOB_ROLE_NAME, STATUS
+          FROM SEC.JOB_ROLES
+          WHERE JOB_ROLE_ID IN (${parentPlaceholders})
+        `;
+        
+        const parentResult = await executeQuery(parentQuery, parentBinds);
+        parentResult.rows.forEach(jr => {
+          parentJobRoleMap.set(jr.JOB_ROLE_ID, {
+            job_role_id: jr.JOB_ROLE_ID,
+            job_role_code: jr.JOB_ROLE_CODE,
+            job_role_name: jr.JOB_ROLE_NAME,
+            status: jr.STATUS
+          });
+        });
+      }
+    }
+    
+    // Step 3: Fetch all parent job roles with their duty roles (for inheritance)
+    const parentDutyRoleMap = new Map(); // Maps parent_id -> Set of duty role IDs (includes recursive)
+    if (allParentJobRoleIds.size > 0) {
+      // First, fetch all direct parents
+      const parentBinds = {};
+      const parentPlaceholders = Array.from(allParentJobRoleIds)
+        .map((id, idx) => {
+          const key = `pid${idx}`;
+          parentBinds[key] = id;
+          return `:${key}`;
+        })
+        .join(',');
+      
+      let parentDutyResult = await executeQuery(
+        `SELECT JOB_ROLE_ID, DUTY_ROLES, INHERITED_FROM FROM SEC.JOB_ROLES WHERE JOB_ROLE_ID IN (${parentPlaceholders})`,
+        parentBinds
+      );
+      
+      // Recursively fetch all ancestors and build inheritance map
+      const allAncestorIds = new Set(allParentJobRoleIds);
+      let currentLevelIds = Array.from(allParentJobRoleIds);
+      const visited = new Set();
+      
+      while (currentLevelIds.length > 0) {
+        const nextLevelIds = [];
+        
+        currentLevelIds.forEach(parentId => {
+          if (visited.has(parentId)) return;
+          visited.add(parentId);
+          
+          const parentRow = parentDutyResult.rows.find(r => r.JOB_ROLE_ID === parentId);
+          if (parentRow) {
+            const parentDutyIds = this.decodeIdArray(parentRow.DUTY_ROLES);
+            if (!parentDutyRoleMap.has(parentId)) {
+              parentDutyRoleMap.set(parentId, new Set(parentDutyIds));
+            }
+            parentDutyIds.forEach(id => allDutyRoleIds.add(id));
+            
+            const grandParentIds = this.decodeIdArray(parentRow.INHERITED_FROM);
+            grandParentIds.forEach(gpid => {
+              if (!visited.has(gpid) && !allAncestorIds.has(gpid)) {
+                allAncestorIds.add(gpid);
+                nextLevelIds.push(gpid);
+              }
+            });
+          }
+        });
+        
+        if (nextLevelIds.length > 0) {
+          const ancestorBinds = {};
+          const ancestorPlaceholders = nextLevelIds
+            .map((id, idx) => {
+              const key = `aid${idx}`;
+              ancestorBinds[key] = id;
+              return `:${key}`;
+            })
+            .join(',');
+          
+          const ancestorResult = await executeQuery(
+            `SELECT JOB_ROLE_ID, DUTY_ROLES, INHERITED_FROM FROM SEC.JOB_ROLES WHERE JOB_ROLE_ID IN (${ancestorPlaceholders})`,
+            ancestorBinds
+          );
+          
+          parentDutyResult.rows.push(...ancestorResult.rows);
+          currentLevelIds = nextLevelIds;
+        } else {
+          break;
+        }
+      }
+      
+      // Build recursive duty role map (each parent includes its own + ancestors' duty roles)
+      const buildInheritedDuties = (parentId, visited = new Set()) => {
+        if (visited.has(parentId)) return parentDutyRoleMap.get(parentId) || new Set();
+        visited.add(parentId);
+        
+        const parentRow = parentDutyResult.rows.find(r => r.JOB_ROLE_ID === parentId);
+        if (!parentRow) return new Set();
+        
+        const ownDutyIds = new Set(this.decodeIdArray(parentRow.DUTY_ROLES));
+        const grandParentIds = this.decodeIdArray(parentRow.INHERITED_FROM);
+        
+        grandParentIds.forEach(gpid => {
+          const inherited = buildInheritedDuties(gpid, visited);
+          inherited.forEach(id => ownDutyIds.add(id));
+        });
+        
+        parentDutyRoleMap.set(parentId, ownDutyIds);
+        return ownDutyIds;
+      };
+      
+      Array.from(allParentJobRoleIds).forEach(parentId => {
+        buildInheritedDuties(parentId);
+      });
+      
+      // Add all inherited duty role IDs to the main set
+      parentDutyRoleMap.forEach(dutyIds => {
+        dutyIds.forEach(id => allDutyRoleIds.add(id));
+      });
+    }
+    
+    // Step 4: Fetch ALL duty roles once (includes both explicit and inherited)
+    let allDutyRolesMap = new Map();
+    if (allDutyRoleIds.size > 0) {
+      const dutyRoleBinds = {};
+      const dutyRolePlaceholders = Array.from(allDutyRoleIds)
+        .map((id, idx) => {
+          const key = `did${idx}`;
+          dutyRoleBinds[key] = id;
+          return `:${key}`;
+        })
+        .join(',');
+      
+      // Use the optimized fetchDutyRolesByIds equivalent logic
+      const dutyRoleQuery = `
+        SELECT 
+          DR.DUTY_ROLE_ID,
+          DR.DUTY_ROLE_NAME,
+          DR.ROLE_CODE,
+          DR.STATUS,
+          DR.MODULE_ID,
+          M.MODULE_NAME,
+          DR.DESCRIPTION,
+          DR.FUNCTION_PRIVILEGES
+        FROM SEC.DUTY_ROLES DR
+        LEFT JOIN SEC.MODULES M ON DR.MODULE_ID = M.MODULE_ID
+        WHERE DR.DUTY_ROLE_ID IN (${dutyRolePlaceholders})
+      `;
+      
+      const dutyRoleResult = await executeQuery(dutyRoleQuery, dutyRoleBinds);
+      
+      // Batch fetch all privileges
+      const allPrivilegeIds = new Set();
+      const dutyRolePrivilegeMap = new Map();
+      
+      dutyRoleResult.rows.forEach(row => {
+        const privilegeIds = DutyRoleModel.decodeIdArray(row.FUNCTION_PRIVILEGES);
+        if (privilegeIds.length > 0) {
+          dutyRolePrivilegeMap.set(row.DUTY_ROLE_ID, privilegeIds);
+          privilegeIds.forEach(id => allPrivilegeIds.add(id));
+        } else {
+          dutyRolePrivilegeMap.set(row.DUTY_ROLE_ID, []);
+        }
+      });
+      
+      let privilegeMap = new Map();
+      if (allPrivilegeIds.size > 0) {
+        const privilegeBinds = {};
+        const privilegePlaceholders = Array.from(allPrivilegeIds)
+          .map((id, idx) => {
+            const key = `pid${idx}`;
+            privilegeBinds[key] = id;
+            return `:${key}`;
+          })
+          .join(',');
+        
+        const privilegeQuery = `
+          SELECT 
+            FP.PRIVILEGE_ID,
+            FP.PRIVILEGE_CODE,
+            FP.PRIVILEGE_NAME,
+            FP.MODULE_ID,
+            M.MODULE_NAME,
+            FP.FUNCTION_ID,
+            F.FUNCTION_NAME,
+            FP.OPERATION_ID,
+            O.OPERATION_NAME
+          FROM SEC.FUNCTION_PRIVILEGES FP
+          LEFT JOIN SEC.MODULES M ON FP.MODULE_ID = M.MODULE_ID
+          LEFT JOIN SEC.FUNCTIONS F ON FP.FUNCTION_ID = F.FUNCTION_ID
+          LEFT JOIN SEC.OPERATIONS O ON FP.OPERATION_ID = O.OPERATION_ID
+          WHERE FP.PRIVILEGE_ID IN (${privilegePlaceholders})
+        `;
+        
+        const privilegeResult = await executeQuery(privilegeQuery, privilegeBinds);
+        privilegeResult.rows.forEach(priv => {
+          privilegeMap.set(priv.PRIVILEGE_ID, {
+            privilege_id: priv.PRIVILEGE_ID,
+            privilege_code: priv.PRIVILEGE_CODE,
+            privilege_name: priv.PRIVILEGE_NAME,
+            module_id: priv.MODULE_ID,
+            module_name: priv.MODULE_NAME,
+            function_id: priv.FUNCTION_ID,
+            function_name: priv.FUNCTION_NAME,
+            operation_id: priv.OPERATION_ID,
+            operation_name: priv.OPERATION_NAME
+          });
+        });
+      }
+      
+      // Build duty roles map with privileges
+      dutyRoleResult.rows.forEach(row => {
+        const privilegeIds = dutyRolePrivilegeMap.get(row.DUTY_ROLE_ID) || [];
+        const privileges = privilegeIds
+          .map(pid => privilegeMap.get(pid))
+          .filter(p => p !== undefined);
+        
+        allDutyRolesMap.set(row.DUTY_ROLE_ID, {
+          duty_role_id: row.DUTY_ROLE_ID,
+          duty_role_name: row.DUTY_ROLE_NAME,
+          role_code: row.ROLE_CODE,
+          status: row.STATUS,
+          module_id: row.MODULE_ID,
+          module_name: row.MODULE_NAME,
+          description: row.DESCRIPTION,
+          function_privileges: privileges
+        });
+      });
+    }
+    
+    // Step 5: Build response using cached data (no more queries)
+    const dataWithDecoded = dataResult.rows.map(row => {
+      const jobRoleId = row.JOB_ROLE_ID;
+      const jobRoleData = jobRoleDataMap.get(jobRoleId);
+      
+      // Build effective duty roles (explicit + inherited from all parents recursively)
+      const effectiveDutyIds = new Set(jobRoleData.explicitDutyIds);
+      jobRoleData.parentIds.forEach(parentId => {
+        const inheritedDuties = parentDutyRoleMap.get(parentId);
+        if (inheritedDuties) {
+          inheritedDuties.forEach(id => effectiveDutyIds.add(id));
+        }
+      });
+      
+      const effectiveDutyRoles = Array.from(effectiveDutyIds)
+        .map(id => allDutyRolesMap.get(id))
+        .filter(dr => dr !== undefined);
+      
+      // Build inherited_from decoded
+      const decodedInheritedFrom = jobRoleData.parentIds
+        .map(id => parentJobRoleMap.get(id))
+        .filter(jr => jr !== undefined);
+      
+      // Build inherited decoded
+      const decodedInherited = jobRoleData.inherited
+        .map(id => parentJobRoleMap.get(id))
+        .filter(jr => jr !== undefined);
+      
+      return {
+        ...row,
+        DUTY_ROLES_DECODED: effectiveDutyRoles,
+        INHERITED_FROM_DECODED: decodedInheritedFrom,
+        INHERITED_DECODED: decodedInherited
+      };
+    });
     
     return {
       data: dataWithDecoded,
